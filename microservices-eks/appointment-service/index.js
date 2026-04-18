@@ -22,7 +22,7 @@ let appointments = [
 ];
 
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK', service: 'Appointment Service' });
+  res.status(200).json({ status: 'OK', service: 'Appointment Service', version: 'v1.0.1' });
 });
 
 app.get('/appointments', (req, res) => {
