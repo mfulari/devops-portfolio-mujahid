@@ -3,6 +3,9 @@ name: Build, scan, and deploy (Docker Hub)
 on:
   push:
     branches: [main]
+    paths:
+      - "microservices-eks/**"
+      - ".github/workflows/deploy-dockerhub.yml"
   workflow_dispatch:
 
 permissions:
@@ -39,6 +42,7 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
+          projectBaseDir: microservices-eks
           args: >
             -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
@@ -62,7 +66,7 @@ jobs:
       - name: Build and push patient-service
         uses: docker/build-push-action@v6
         with:
-          context: ./patient-service
+          context: ./microservices-eks/patient-service
           push: true
           tags: |
             ${{ env.REGISTRY }}/patient-service:${{ env.IMAGE_TAG }}
@@ -73,7 +77,7 @@ jobs:
       - name: Build and push appointment-service
         uses: docker/build-push-action@v6
         with:
-          context: ./appointment-service
+          context: ./microservices-eks/appointment-service
           push: true
           tags: |
             ${{ env.REGISTRY }}/appointment-service:${{ env.IMAGE_TAG }}
@@ -98,6 +102,7 @@ jobs:
           chmod 600 "$HOME/.kube/config"
 
       - name: Deploy manifests
+        working-directory: microservices-eks
         run: |
           set -euo pipefail
           kubectl apply -f k8s/namespace.yaml
