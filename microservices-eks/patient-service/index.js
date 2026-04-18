@@ -10,7 +10,7 @@ let patients = [
 ];
 
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'OK', service: 'Patient Service' });
+  res.status(200).json({ status: 'OK', service: 'Patient Service', version: 'v1.0.1' });
 });
 
 app.get('/patients', (req, res) => {
