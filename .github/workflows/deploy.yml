@@ -1,11 +1,6 @@
 name: Build, scan, and deploy to EKS
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "microservices-eks/**"
-      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
 permissions:
@@ -20,7 +15,25 @@ env:
   K8S_NAMESPACE: microservices
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      has_aws: ${{ steps.check.outputs.has_aws }}
+    steps:
+      - id: check
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          if [ -n "${AWS_DEPLOY_ROLE_ARN:-}" ]; then
+            echo "has_aws=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::AWS_DEPLOY_ROLE_ARN secret is not set; skipping EKS deploy."
+            echo "has_aws=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build-scan-deploy:
+    needs: preflight
+    if: needs.preflight.outputs.has_aws == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

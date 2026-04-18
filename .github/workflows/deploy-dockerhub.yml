@@ -1,4 +1,4 @@
-name: Build, scan, and deploy (Docker Hub)
+name: Build and publish (Docker Hub)
 
 on:
   push:
@@ -12,32 +12,45 @@ permissions:
   contents: read
 
 env:
-  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
   K8S_NAMESPACE: microservices
 
 jobs:
-  build-push-deploy:
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      has_dockerhub: ${{ steps.check.outputs.has_dockerhub }}
+      has_kubeconfig: ${{ steps.check.outputs.has_kubeconfig }}
+      has_sonar: ${{ steps.check.outputs.has_sonar }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # --- Static analysis (skipped if SONAR_TOKEN not set) ------------------
-      - name: Check Sonar config
-        id: sonar_cfg
+      - id: check
         env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
-          if [ -n "${SONAR_TOKEN:-}" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "has_dockerhub=true" >> "$GITHUB_OUTPUT"
           else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set; build will be skipped."
+            echo "has_dockerhub=false" >> "$GITHUB_OUTPUT"
           fi
+          [ -n "${KUBE_CONFIG:-}" ] && echo "has_kubeconfig=true" >> "$GITHUB_OUTPUT" || echo "has_kubeconfig=false" >> "$GITHUB_OUTPUT"
+          [ -n "${SONAR_TOKEN:-}" ]  && echo "has_sonar=true"      >> "$GITHUB_OUTPUT" || echo "has_sonar=false"      >> "$GITHUB_OUTPUT"
 
-      - name: SonarQube Scan
-        if: steps.sonar_cfg.outputs.enabled == 'true'
+  build-and-push:
+    needs: preflight
+    if: needs.preflight.outputs.has_dockerhub == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+      registry: ${{ steps.vars.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SonarQube scan
+        if: needs.preflight.outputs.has_sonar == 'true'
         uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -47,21 +60,18 @@ jobs:
             -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
 
-      # --- Docker Hub auth ---------------------------------------------------
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set image coordinates
+      - id: vars
         run: |
-          echo "REGISTRY=${{ secrets.DOCKERHUB_USERNAME }}" >> "$GITHUB_ENV"
-          echo "IMAGE_TAG=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          echo "registry=${{ secrets.DOCKERHUB_USERNAME }}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
-      # --- Build & push images -----------------------------------------------
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push patient-service
         uses: docker/build-push-action@v6
@@ -69,8 +79,8 @@ jobs:
           context: ./microservices-eks/patient-service
           push: true
           tags: |
-            ${{ env.REGISTRY }}/patient-service:${{ env.IMAGE_TAG }}
-            ${{ env.REGISTRY }}/patient-service:latest
+            ${{ steps.vars.outputs.registry }}/patient-service:${{ steps.vars.outputs.image_tag }}
+            ${{ steps.vars.outputs.registry }}/patient-service:latest
           cache-from: type=gha,scope=patient-service
           cache-to: type=gha,scope=patient-service,mode=max
 
@@ -80,44 +90,44 @@ jobs:
           context: ./microservices-eks/appointment-service
           push: true
           tags: |
-            ${{ env.REGISTRY }}/appointment-service:${{ env.IMAGE_TAG }}
-            ${{ env.REGISTRY }}/appointment-service:latest
+            ${{ steps.vars.outputs.registry }}/appointment-service:${{ steps.vars.outputs.image_tag }}
+            ${{ steps.vars.outputs.registry }}/appointment-service:latest
           cache-from: type=gha,scope=appointment-service
           cache-to: type=gha,scope=appointment-service,mode=max
 
-      # --- Deploy to Kubernetes ----------------------------------------------
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
+  deploy:
+    needs: [preflight, build-and-push]
+    if: needs.preflight.outputs.has_kubeconfig == 'true'
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
         with:
           version: v1.30.0
 
       - name: Configure kubeconfig
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.kube"
-          if [ -z "${{ secrets.KUBE_CONFIG }}" ]; then
-            echo "::error::KUBE_CONFIG secret is not set. Add a base64-encoded kubeconfig."
-            exit 1
-          fi
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
 
-      - name: Deploy manifests
+      - name: Apply manifests
         working-directory: microservices-eks
         run: |
           set -euo pipefail
           kubectl apply -f k8s/namespace.yaml
-          export REGISTRY="${REGISTRY}"
-          export IMAGE_TAG="${IMAGE_TAG}"
           envsubst '$REGISTRY $IMAGE_TAG' < k8s/patient-deployment.yaml     | kubectl apply -f -
           envsubst '$REGISTRY $IMAGE_TAG' < k8s/appointment-deployment.yaml | kubectl apply -f -
           kubectl apply -f k8s/patient-service.yaml
           kubectl apply -f k8s/appointment-service.yaml
-          kubectl -n "${K8S_NAMESPACE}" rollout status deployment/patient-service     --timeout=180s
-          kubectl -n "${K8S_NAMESPACE}" rollout status deployment/appointment-service --timeout=180s
+          kubectl -n "$K8S_NAMESPACE" rollout status deployment/patient-service     --timeout=180s
+          kubectl -n "$K8S_NAMESPACE" rollout status deployment/appointment-service --timeout=180s
 
-      - name: Show service endpoints
+      - name: Show endpoints
         run: |
-          echo "== Services =="
-          kubectl -n "${K8S_NAMESPACE}" get svc -o wide
-          echo "== Pods =="
-          kubectl -n "${K8S_NAMESPACE}" get pods -o wide
+          kubectl -n "$K8S_NAMESPACE" get svc,pods -o wide
