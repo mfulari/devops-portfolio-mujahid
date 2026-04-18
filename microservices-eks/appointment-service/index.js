@@ -8,7 +8,7 @@ let appointments = [
   {
     id: '1',
     patientId: '1',
-    date: '2023-06-15',
+    date: '2023-06-16',
     time: '10:00',
     doctor: 'Dr. Smith',
   },
