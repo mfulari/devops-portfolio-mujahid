@@ -127,13 +127,13 @@ resource "aws_iam_role_policy_attachment" "gha_eks_describe" {
 # Grant the deployer role cluster-admin via an EKS access entry so kubectl
 # apply works over OIDC without touching aws-auth ConfigMap.
 resource "aws_eks_access_entry" "github_actions" {
-  cluster_name  = module.eks.cluster_name
+  cluster_name  = aws_eks_cluster.this.name
   principal_arn = aws_iam_role.github_actions_deployer.arn
   type          = "STANDARD"
 }
 
 resource "aws_eks_access_policy_association" "github_actions_admin" {
-  cluster_name  = module.eks.cluster_name
+  cluster_name  = aws_eks_cluster.this.name
   principal_arn = aws_iam_role.github_actions_deployer.arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
 
