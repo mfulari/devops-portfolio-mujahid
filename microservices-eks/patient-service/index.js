@@ -5,7 +5,7 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 
 let patients = [
-  { id: '1', name: 'John Doe', age: 30, condition: 'Healthy' },
+  { id: '1', name: 'Amit Roy', age: 30, condition: 'Healthy' },
   { id: '2', name: 'Jane Smith', age: 45, condition: 'Hypertension' },
 ];
 
